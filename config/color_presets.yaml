@@ -1,0 +1,4 @@
+presets:
+  green_pellets:
+    lower_hsv: [33, 69, 174]
+    upper_hsv: [98, 101, 228]

@@ -1,0 +1,17 @@
+# Secrets — keep real credentials out of git.
+# Copy camera_secrets.example.yaml → camera_secrets.yaml and fill it in locally.
+config/camera_secrets.yaml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Editor
+.vscode/
+*.swp
+.cache/
+
+# Plans / scratch notes
+camera_node_plan.md

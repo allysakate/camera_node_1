@@ -1,0 +1,76 @@
+# Camera Node — central configuration
+# Edit this file to change defaults used by camera_spb_node and camera_gui.
+# Override path: set CAMERA_NODE_CONFIG env var to point at a custom copy.
+# Credentials live in camera_secrets.yaml (gitignored) — see camera_secrets.example.yaml.
+
+# ── ISA-95 / Sparkplug B identity ────────────────────────────────────────────
+# Group  = Enterprise+Area+Site+Factory: DMATDTS_DLSU_LS_MiniFactory
+# Node   = camera_node
+# Device = depthai_camera
+# Full SCADA path: DMATDTS_DLSU_LS_MiniFactory/camera_node/depthai_camera/<metric>
+spb_bridge:
+  group_id:        DMATDTS_DLSU_LS_MiniFactory
+  edge_node_id:    camera_node
+  device_id:       depthai_camera
+  metric_prefix:   ""
+
+  # ID of the SCADA primary host monitored on STATE/<id>.
+  # If this host goes OFFLINE the bridge enters Safe State (Aborted + alarm 8003).
+  primary_host_id: IgnitionPrimary
+
+  # Heartbeat toggle interval in seconds.
+  heartbeat_interval_s: 0.5
+
+  # --- Broker selection ---
+  # broker_type: local | hivemq
+  broker_type: local
+
+  # NOTE: Broker host / username / password live in camera_secrets.yaml (gitignored).
+  # See camera_secrets.example.yaml for the expected structure.
+  local:
+    port:    1883
+    use_tls: false
+
+  hivemq:
+    host: ""
+    port: 8883
+    use_tls: true
+    username: ""
+    password: ""
+
+
+# ── Camera / DepthAI ─────────────────────────────────────────────────────────
+camera:
+  # Capture resolution fed into the detection pipeline.
+  frame_width:  640
+  frame_height: 400
+
+  # How long Execute may run before alarm 8002 (DetectionTimeout) fires.
+  detection_timeout_s: 30.0
+
+  # Expected pellet colour — HSV range (OpenCV scale: H 0-179, S 0-255, V 0-255).
+  # Pixels inside this range are counted as pellets (Result/PelletPixelCount).
+  pellet_color:
+    lower_hsv: [28, 140, 160]   # yellow pellet lower bound
+    upper_hsv: [38, 255, 255]   # yellow pellet upper bound
+
+  # Foreign object colour — HSV range for material that should NOT be present.
+  # Pixels inside this range increment Result/ForeignPixelCount.
+  # Set both bounds to [0,0,0] to disable foreign-object detection.
+  foreign_color:
+    lower_hsv: [0,   0,   0]
+    upper_hsv: [0,   0,   0]
+
+  # Minimum pixel counts to register a positive detection.
+  # Values below threshold are treated as noise and ignored.
+  pellet_pixel_threshold:  100   # min pixels to consider pellets present
+  foreign_pixel_threshold: 50    # min pixels to flag a foreign object (→ reject)
+
+
+# ── Alarm codes ───────────────────────────────────────────────────────────────
+# These are informational — used by config_loader to validate; do not change
+# unless the alarm catalogue in camera_spb_node.py is also updated.
+alarms:
+  camera_offline:        8001
+  detection_timeout:     8002
+  primary_host_offline:  8003

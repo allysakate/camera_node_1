@@ -87,7 +87,7 @@ class CameraDetector:
             RuntimeError   If the device is unavailable.
         """
         if self._camera_type == "webcam":
-            cap = cv2.VideoCapture(self._webcam_index)
+            cap = cv2.VideoCapture(self._webcam_index, cv2.CAP_V4L2)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
             ret, bgr = cap.read()
@@ -124,7 +124,7 @@ class CameraDetector:
             RuntimeError   If the device is unavailable.
         """
         if self._camera_type == "webcam":
-            cap = cv2.VideoCapture(self._webcam_index)
+            cap = cv2.VideoCapture(self._webcam_index, cv2.CAP_V4L2)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
             if not cap.isOpened():

@@ -18,6 +18,7 @@ import queue
 import ssl
 import threading
 import time
+from collections import deque
 from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
@@ -118,6 +119,7 @@ class CameraSpbBridge:
         self._primary_host_id  = cfg.primary_host_id
         self._heartbeat_interval = cfg.heartbeat_interval_s
         self._detection_timeout  = cfg.detection_timeout_s
+        self._frame_counter = cfg.frame_counter
         self._cam_cfg = cfg
 
         # Reverse lookup: full metric name → CMD code (built after _m is available)
@@ -136,14 +138,18 @@ class CameraSpbBridge:
         self._STATE_TOPIC  = f"{ns}/STATE/{self._primary_host_id}"
 
         # ── Runtime state ─────────────────────────────────────────────────
-        self._state: str     = STATE_IDLE
+        self._state: str     = STATE_ABORTED
         self._heartbeat      = False
         self._connected      = False
         self._primary_seen   = False
         self._primary_online = False
         self._in_flight      = False
         self._stop_event     = threading.Event()
-
+        # counts frames with pellets present during a detection cycle
+        self._idle_timer: Optional[threading.Timer] = None
+        self._pellet_px_buffer = deque(maxlen=self._frame_counter)
+        self._foreign_px_buffer = deque(maxlen=self._frame_counter)
+        self._pass_buffer = deque(maxlen=self._frame_counter)
         self._alarm_states: dict = {c: ALARM_NORMAL for c in ALARM_DEFINITIONS}
         self._alarm_onsets: dict = {c: 0            for c in ALARM_DEFINITIONS}
         self._last_published: dict = {}
@@ -282,6 +288,54 @@ class CameraSpbBridge:
             self._last_published[name] = value
         self._mqtt.publish(self._DDATA_TOPIC, payload.SerializeToString(), qos=0)
 
+        status_pubs = [
+            f"{name}={value!r}"
+            for name, (_, value) in metrics.items()
+            if "/Status/" in name or "/State/" in name
+        ]
+        result_pubs = [
+            f"{name}={value!r}"
+            for name, (_, value) in metrics.items()
+            if "/Result/Last/" in name
+        ]
+        command_pubs = [
+            f"{name}={value!r}"
+            for name, (_, value) in metrics.items()
+            if "Cmd/CntrlCmd" in name
+        ]
+        others = [
+            f"{name}={value!r}"
+            for name, (_, value) in metrics.items()
+            if "/Status/" not in name and "/State/" not in name
+            and "/Result/Last/" not in name and "Cmd/CntrlCmd" not in name
+        ]
+        parts = []
+        if status_pubs:
+            parts.append(f"status=[{'; '.join(status_pubs)}]")
+        if result_pubs:
+            parts.append(f"result=[{'; '.join(result_pubs)}]")
+        if command_pubs:
+            parts.append(f"command=[{'; '.join(command_pubs)}]")
+        if others:
+            parts.append(f"other=[{'; '.join(others)}]")
+        print(f"[SPB] Published DDATA: {' '.join(parts)}")
+
+    def publish_cmd(self, code: str):
+        if code not in _CMD_BOOL_TAGS:
+            print(f"[SPB] publish_cmd ignored: unknown code {code}")
+            return
+        if not self._connected:
+            print("[SPB] publish_cmd ignored: bridge not connected")
+            return
+        name = self._m(_CMD_BOOL_TAGS[code])
+        print(f"[SPB] publish_cmd: Cmd/CntrlCmd/{code}")
+        self._publish_ddata({name: (MetricDataType.Boolean, True)})
+        self._execute_cntrl_cmd(code)
+        self._publish_ddata({
+            self._m(suffix): (MetricDataType.Boolean, False)
+            for suffix in _CMD_BOOL_TAGS.values()
+        })
+
     # ------------------------------------------------------------------
     # DCMD handling
     # ------------------------------------------------------------------
@@ -315,27 +369,29 @@ class CameraSpbBridge:
             else:
                 print(f"[SPB] DCMD ignored (unknown metric): {name}")
 
+    def _delayed_idle(self):
+        # Don't leave Complete if an alarm occurred meanwhile
+        if self._active_alarm_count() > 0:
+            return
+        self._set_state(STATE_IDLE)
+
     def _execute_cntrl_cmd(self, code: str):
         if code == CMD_RESET:
             if self._state == STATE_COMPLETE:
-                self._set_state(STATE_IDLE)
-            else:
-                print(f"[SPB] Reset ignored: state must be Complete (got {self._state})")
+                self._clear_result_values()
+                reset_timer = threading.Timer(2.0, self._delayed_idle)
+                reset_timer.daemon = True
+                reset_timer.start()
             return
 
         if code == CMD_START:
-            if self._state != STATE_IDLE:
-                print(f"[SPB] Start ignored: state must be Idle (got {self._state})")
-                return
-            if self._active_alarm_count() > 0:
-                print("[SPB] Start ignored: active alarms must be cleared first")
-                return
-            self._start_detection()
+            self._request_start()
             return
 
         if code == CMD_STOP:
             self._in_flight = False
-            self._set_state(STATE_IDLE)
+            self._set_state(STATE_ABORTED)
+            self.publish_cmd(CMD_CLEAR)
             return
 
         if code == CMD_CLEAR:
@@ -358,15 +414,82 @@ class CameraSpbBridge:
         if new_state == self._state:
             return
         print(f"[SPB] State: {self._state} → {new_state}")
+        # Cancel any pending idle auto-start timer
+        if self._idle_timer is not None:
+            try:
+                self._idle_timer.cancel()
+            except Exception:
+                pass
+            self._idle_timer = None
+
         self._state = new_state
         self._publish_ddata({
             self._m(suffix): (MetricDataType.Boolean, new_state == state_code)
             for state_code, suffix in _STATE_BOOL_TAGS.items()
         })
 
+        # Schedule auto-start when entering Idle
+        if new_state == STATE_IDLE:
+            self._idle_timer = threading.Timer(2.0, self._auto_start)
+            self._idle_timer.daemon = True
+            self._idle_timer.start()
+
     # ------------------------------------------------------------------
     # Detection cycle
     # ------------------------------------------------------------------
+
+    def _request_start(self):
+        print(
+            f"[SPB] Request start: state={self._state}, "
+            f"alarms={self._active_alarm_count()}"
+        )
+        if self._state != STATE_IDLE:
+            print(f"[SPB] Start ignored: state must be Idle (got {self._state})")
+            return
+
+        if self._active_alarm_count() > 0:
+            print("[SPB] Start ignored: active alarms must be cleared first")
+            return
+        self._start_detection()
+
+
+    def _auto_start(self):
+        """Automatic start transition after 2 seconds of idle.
+
+        Probes the GUI `frame_provider` (if present) to ensure the camera
+        pipeline is running before issuing a Start command.
+        """
+        if self._state == STATE_IDLE and self._active_alarm_count() == 0:
+            # If running in GUI/shared-pipeline mode, probe the frame provider
+            # to ensure the camera isn't stopped before auto-starting.
+            if self._frame_provider is not None:
+                try:
+                    probe = self._frame_provider(timeout=0.5)
+                except TypeError:
+                    # frame_provider doesn't accept timeout — conservatively skip auto-start
+                    print("[SPB] Auto-start skipped: frame_provider not probeable")
+                    return
+                except queue.Empty:
+                    print("[SPB] Auto-start skipped: camera stopped (no frame)")
+                    return
+                except Exception as exc:
+                    print(f"[SPB] Auto-start probe failed: {exc}")
+                    return
+                else:
+                    try:
+                        pass_, pellet_px, foreign_px, pellet_count = probe
+                        self.push_result(pass_, pellet_px, foreign_px, pellet_count)
+                    except Exception:
+                        pass
+
+            print("[SPB] Auto-starting detection (idle timeout)")
+            self.publish_cmd(CMD_START)
+            
+        else:
+            if self._state != STATE_IDLE:
+                print(f"[SPB] Auto-start skipped: state changed to {self._state}")
+            if self._active_alarm_count() > 0:
+                print("[SPB] Auto-start skipped: active alarms present")
 
     def _start_detection(self):
         self._set_state(STATE_EXECUTE)
@@ -374,7 +497,24 @@ class CameraSpbBridge:
         threading.Thread(target=self._run_detection, daemon=True).start()
         threading.Timer(self._detection_timeout, self._timeout_check).start()
 
+    def _clear_result_values(self):
+        """Clear result pixel counts and pass flag."""
+        self._publish_ddata({
+            self._m("Result/Last/Pass"):              (MetricDataType.Boolean, True),
+            self._m("Result/Last/PelletCount"):       (MetricDataType.Int32,   0),
+            self._m("Result/Last/PelletPixelCount"):  (MetricDataType.Int32,   0),
+            self._m("Result/Last/ForeignPixelCount"): (MetricDataType.Int32,   0),
+            self._m("Result/Last/TimestampMs"):       (MetricDataType.Int64,   0),
+        })
+        self._last_result = None
+        self._pellet_px_buffer.clear()
+        self._foreign_px_buffer.clear()
+        self._pass_buffer.clear()
+
     def _run_detection(self):
+        if self._state != STATE_EXECUTE:
+            print(f"[SPB] Detection skipped: state must be Execute (got {self._state})")
+            return
         try:
             if self._frame_provider is not None:
                 # GUI mode: share the live VideoWorker pipeline.
@@ -395,21 +535,8 @@ class CameraSpbBridge:
         if not self._in_flight:
             return  # timed out or stopped before we finished
 
-        self._in_flight = False
-        ts_ms = int(time.time() * 1000)
-        result_str = "PASS" if pass_ else "REJECT"
-        print(
-            f"[SPB] Detection complete: {result_str} | "
-            f"pellet_px={pellet_px} foreign_px={foreign_px}"
-        )
-        self._publish_ddata({
-            self._m("Result/Last/Pass"):              (MetricDataType.Boolean, pass_),
-            self._m("Result/Last/PelletCount"):       (MetricDataType.Int32,   pellet_count),
-            self._m("Result/Last/PelletPixelCount"):  (MetricDataType.Int32,   pellet_px),
-            self._m("Result/Last/ForeignPixelCount"): (MetricDataType.Int32,   foreign_px),
-            self._m("Result/Last/TimestampMs"):       (MetricDataType.Int64,   ts_ms),
-        })
-        self._set_state(STATE_COMPLETE)
+        if self._state == STATE_EXECUTE and self._in_flight:
+            self.push_result(pass_, pellet_px, foreign_px, pellet_count)
 
     def push_result(self, pass_: bool, pellet_px: int, foreign_px: int, pellet_count: int):
         """Publish a live detection result immediately, outside any SCADA cycle.
@@ -420,14 +547,36 @@ class CameraSpbBridge:
         """
         if not self._connected:
             return
+        
+        # ── accumulate n-frame history ─────────────────────────────
+        pellet_threshold = self._cam_cfg.pellet_pixel_threshold
+        if pellet_px > pellet_threshold:
+            self._pellet_px_buffer.append(pellet_px)
+            self._pass_buffer.append(pass_)
+            if foreign_px > self._cam_cfg.foreign_pixel_threshold:
+                self._foreign_px_buffer.append(foreign_px)
+
+        # wait until buffer is full
+        if len(self._pellet_px_buffer) < self._frame_counter:
+            return
+        
+        if len(self._foreign_px_buffer) == 0:
+            max_foreign_px = 0
+        else:
+            max_foreign_px = max(self._foreign_px_buffer)
+        max_pellet_px = max(self._pellet_px_buffer)
+        all_pass = all(self._pass_buffer)
+        self._in_flight = False
         ts_ms = int(time.time() * 1000)
         self._publish_ddata({
-            self._m("Result/Last/Pass"):              (MetricDataType.Boolean, pass_),
+            self._m("Result/Last/Pass"):              (MetricDataType.Boolean, all_pass),
             self._m("Result/Last/PelletCount"):       (MetricDataType.Int32,   pellet_count),
-            self._m("Result/Last/PelletPixelCount"):  (MetricDataType.Int32,   pellet_px),
-            self._m("Result/Last/ForeignPixelCount"): (MetricDataType.Int32,   foreign_px),
+            self._m("Result/Last/PelletPixelCount"):  (MetricDataType.Int32,   max_pellet_px),
+            self._m("Result/Last/ForeignPixelCount"): (MetricDataType.Int32,   max_foreign_px),
             self._m("Result/Last/TimestampMs"):       (MetricDataType.Int64,   ts_ms),
         })
+        self._set_state(STATE_COMPLETE)
+        self.publish_cmd(CMD_RESET)
 
     def _timeout_check(self):
         if self._in_flight:
@@ -470,6 +619,7 @@ class CameraSpbBridge:
     def _set_aborted(self, alarm_code: int):
         self._raise_alarm(alarm_code)
         self._set_state(STATE_ABORTED)
+        self.publish_cmd(CMD_CLEAR)
 
     # ------------------------------------------------------------------
     # Primary Host monitoring → Safe State
@@ -508,6 +658,7 @@ class CameraSpbBridge:
         """Block until stop() is called, toggling heartbeat on each interval."""
         print("[SPB] Running — press Ctrl+C to stop")
         try:
+            self._set_state(STATE_IDLE)
             while not self._stop_event.is_set():
                 self._heartbeat = not self._heartbeat
                 self._publish_ddata({

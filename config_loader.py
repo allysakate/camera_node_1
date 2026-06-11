@@ -160,6 +160,10 @@ class CameraConfig:
         return float(_deep_get(self._d, "camera", "detection_timeout_s", default=30.0))
 
     @property
+    def frame_counter(self) -> int:
+        return int(_deep_get(self._d, "camera", "frame_counter", default=30))
+
+    @property
     def pellet_color(self) -> HsvRange:
         s = _deep_get(self._d, "camera", "pellet_color") or {}
         return HsvRange(

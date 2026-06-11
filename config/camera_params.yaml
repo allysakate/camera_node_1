@@ -47,20 +47,27 @@ camera:
 
   # How long Execute may run before alarm 8002 (DetectionTimeout) fires.
   detection_timeout_s: 30.0
+  # Min frames with pellets present to consider a valid detection
+  frame_counter: 30
 
   # Expected pellet colour — HSV range (OpenCV scale: H 0-179, S 0-255, V 0-255).
   # Pixels inside this range are counted as pellets (Result/PelletPixelCount).
   pellet_color:
-    lower_hsv: [28, 140, 160]   # yellow pellet lower bound
-    upper_hsv: [38, 255, 255]   # yellow pellet upper bound
+    lower_hsv: [23, 7, 170]   # white pellet lower bound
+    upper_hsv: [26, 17, 182]   # white pellet upper bound
+
+    # lower_hsv: [0,   0,   180]
+    # upper_hsv: [179,   40,   255]
 
   # Foreign object colour — HSV range for material that should NOT be present.
   # Pixels inside this range increment Result/ForeignPixelCount.
   # Set both bounds to [0,0,0] to disable foreign-object detection.
   foreign_color:
-    lower_hsv: [0,   0,   0]
-    upper_hsv: [0,   0,   0]
+    lower_hsv: [29, 11, 116]   # yellow pellet lower bound
+    upper_hsv: [33, 115, 212]   # yellow pellet upper bound
 
+    # lower_hsv: [28, 140, 160]
+    # upper_hsv: [38, 255, 255]
   # Minimum pixel counts to register a positive detection.
   # Values below threshold are treated as noise and ignored.
   pellet_pixel_threshold:  100   # min pixels to consider pellets present

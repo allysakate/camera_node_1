@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import depthai as dai
 
-from config_loader import load_config
+from .config_loader import load_config
 
 
 def enumerate_webcams(max_index: int = 6) -> list[int]:
@@ -87,7 +87,7 @@ class CameraDetector:
             RuntimeError   If the device is unavailable.
         """
         if self._camera_type == "webcam":
-            cap = cv2.VideoCapture(self._webcam_index)
+            cap = cv2.VideoCapture(self._webcam_index, cv2.CAP_V4L2)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
             ret, bgr = cap.read()
@@ -124,7 +124,7 @@ class CameraDetector:
             RuntimeError   If the device is unavailable.
         """
         if self._camera_type == "webcam":
-            cap = cv2.VideoCapture(self._webcam_index)
+            cap = cv2.VideoCapture(self._webcam_index, cv2.CAP_V4L2)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
             if not cap.isOpened():
@@ -152,6 +152,66 @@ class CameraDetector:
                     callback(self._detect(bgr))
         except Exception as exc:
             raise RuntimeError(f"DepthAI pipeline error: {exc}") from exc
+
+    def capture_n_frames(self, n: int) -> dict:
+        """Open ONE pipeline, grab n frames, return an aggregated detection.
+
+        Aggregation reduces single-frame noise: max pixel counts, all() pass,
+        and max pellet_count. Returns:
+            {"pass": bool, "pellets": int, "pellet_px": int, "foreign_px": int}
+
+        Raises RuntimeError if the device is unavailable or no frame captured.
+        """
+        n = max(1, int(n))
+        pellet_pxs: list[int] = []
+        foreign_pxs: list[int] = []
+        passes: list[bool] = []
+        counts: list[int] = []
+
+        def _accumulate(bgr):
+            r = self._detect(bgr)
+            pellet_pxs.append(r.pellet_px)
+            foreign_pxs.append(r.foreign_px)
+            passes.append(r.pass_)
+            counts.append(r.pellet_count)
+
+        if self._camera_type == "webcam":
+            cap = cv2.VideoCapture(self._webcam_index, cv2.CAP_V4L2)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+            if not cap.isOpened():
+                raise RuntimeError(f"Webcam {self._webcam_index} unavailable")
+            try:
+                for _ in range(n):
+                    ret, bgr = cap.read()
+                    if ret:
+                        _accumulate(bgr)
+            finally:
+                cap.release()
+        else:
+            try:
+                with dai.Pipeline() as pipeline:
+                    cam   = pipeline.create(dai.node.Camera).build()
+                    queue = cam.requestOutput(
+                        (self._width, self._height)
+                    ).createOutputQueue()
+                    pipeline.start()
+                    for _ in range(n):
+                        frame_in = queue.get()
+                        assert isinstance(frame_in, dai.ImgFrame)
+                        _accumulate(frame_in.getCvFrame())
+            except Exception as exc:
+                raise RuntimeError(f"DepthAI pipeline error: {exc}") from exc
+
+        if not pellet_pxs:
+            raise RuntimeError("No frames captured")
+
+        return {
+            "pass":       bool(all(passes)),
+            "pellets":    int(max(counts)),
+            "pellet_px":  int(max(pellet_pxs)),
+            "foreign_px": int(max(foreign_pxs)),
+        }
 
     # ------------------------------------------------------------------
     # Detection logic

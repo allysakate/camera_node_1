@@ -1,0 +1,28 @@
+[Unit]
+Description=Camera Detection Node — headless Sparkplug B bridge (no display)
+Documentation=file:/home/dmat2/agx_arm_ws/src/camera_node_1/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dmat2
+Group=dmat2
+
+Environment=HOME=/home/dmat2
+Environment=CAMERA_NODE_CONFIG=/home/dmat2/agx_arm_ws/src/camera_node_1/config/camera_params.yaml
+Environment=CAMERA_NODE_SECRETS=/home/dmat2/agx_arm_ws/src/camera_node_1/config/camera_secrets.yaml
+
+# Broker override — set to "hivemq" or "local", or leave empty to use camera_params.yaml.
+Environment=CAMERA_BROKER_TYPE=hivemq
+
+WorkingDirectory=/home/dmat2/agx_arm_ws/src/camera_node_1
+
+ExecStart=/usr/bin/python3 /home/dmat2/agx_arm_ws/src/camera_node_1/camera_spb_node.py
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

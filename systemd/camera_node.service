@@ -1,0 +1,39 @@
+[Unit]
+Description=Camera Detection Node — PyQt5 touchscreen panel + Sparkplug B bridge
+Documentation=file:/home/dmat2/agx_arm_ws/src/camera_node_1/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dmat2
+Group=dmat2
+
+# Core paths — point CAMERA_NODE_CONFIG at the live config file.
+# Credentials live in camera_secrets.yaml (gitignored overlay).
+Environment=HOME=/home/dmat2
+Environment=CAMERA_NODE_CONFIG=/home/dmat2/agx_arm_ws/src/camera_node_1/config/camera_params.yaml
+Environment=CAMERA_NODE_SECRETS=/home/dmat2/agx_arm_ws/src/camera_node_1/config/camera_secrets.yaml
+
+# Broker override — set to "hivemq" or "local" to skip camera_params.yaml lookup.
+# Leave empty to use the broker_type field in camera_params.yaml.
+Environment=CAMERA_BROKER_TYPE=hivemq
+
+# Display — required for the PyQt5 window.
+# Adjust for your compositor (Wayland: set WAYLAND_DISPLAY and QT_QPA_PLATFORM=wayland).
+# For framebuffer-only (no Xorg/Wayland): set QT_QPA_PLATFORM=linuxfb
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/dmat2/.Xauthority
+
+WorkingDirectory=/home/dmat2/agx_arm_ws/src/camera_node_1
+
+ExecStart=/usr/bin/python3 /home/dmat2/agx_arm_ws/src/camera_node_1/camera_panel.py \
+    --broker hivemq
+
+# On failure wait 10 s before restart — allows DepthAI USB to re-enumerate.
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=multi-user.target

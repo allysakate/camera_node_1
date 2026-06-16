@@ -23,10 +23,17 @@ import threading
 # Import camera first so cv2 runs, then hard-override the path before
 # QApplication() is instantiated (that is when Qt reads the plugin path).
 from camera import VideoWorker, enumerate_webcams
-from camera_spb_node import CameraSpbBridge
+from camera_spb_node import CameraSpbBridge, CMD_START, CMD_STOP, STATE_EXECUTE
 from color_tuner import ColorTunerDialog
 from config_loader import load_config as _load_cam_cfg
-os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = "/usr/lib/x86_64-linux-gnu/qt5/plugins"
+
+# cv2 (imported inside camera.py) clobbers QT_QPA_PLATFORM_PLUGIN_PATH with its
+# own bundled plugins, which breaks PyQt5's xcb/linuxfb backends. Override it
+# with the system Qt5 plugin path before QApplication() reads the variable.
+import platform as _platform
+_qt_plugin_dir = f"/usr/lib/{_platform.machine()}-linux-gnu/qt5/plugins"
+if os.path.isdir(_qt_plugin_dir):
+    os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qt_plugin_dir
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QPixmap
@@ -302,8 +309,12 @@ class CameraWindow(QMainWindow):
 
     def _on_start(self):
         self._start_camera()
+        if self._bridge is not None:
+            self._bridge.publish_cmd(CMD_START)
 
     def _on_stop(self):
+        if self._bridge is not None:
+            self._bridge.publish_cmd(CMD_STOP)
         self._worker.stop()
         self._cam_combo.setEnabled(True)
         self._start_btn.setEnabled(True)
@@ -411,7 +422,7 @@ class CameraWindow(QMainWindow):
             f"QProgressBar::chunk {{ background-color: {chunk_color}; border-radius: 3px; }}"
         )
 
-        if self._bridge is not None:
+        if self._bridge is not None and self._bridge._state == STATE_EXECUTE:
             self._bridge.push_result(pass_, pellet_px, foreign_px, pellet_count)
 
     # ------------------------------------------------------------------

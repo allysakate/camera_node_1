@@ -164,6 +164,15 @@ class CameraConfig:
         return int(_deep_get(self._d, "camera", "frame_counter", default=30))
 
     @property
+    def roi_center(self) -> tuple:
+        center = _deep_get(self._d, "camera", "roi_center", default=[310, 140])
+        return (int(center[0]), int(center[1]))
+
+    @property
+    def roi_radius(self) -> int:
+        return int(_deep_get(self._d, "camera", "roi_radius", default=300))
+
+    @property
     def pellet_color(self) -> HsvRange:
         s = _deep_get(self._d, "camera", "pellet_color") or {}
         return HsvRange(

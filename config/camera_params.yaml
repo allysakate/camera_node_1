@@ -47,8 +47,10 @@ camera:
 
   # How long Execute may run before alarm 8002 (DetectionTimeout) fires.
   detection_timeout_s: 30.0
-  # Min frames with pellets present to consider a valid detection
-  frame_counter: 30
+  # ROI Center
+  roi_center : [310, 140]
+  # ROI Radius
+  roi_radius: 170
 
   # Expected pellet colour — HSV range (OpenCV scale: H 0-179, S 0-255, V 0-255).
   # Pixels inside this range are counted as pellets (Result/PelletPixelCount).
@@ -71,7 +73,7 @@ camera:
   # Minimum pixel counts to register a positive detection.
   # Values below threshold are treated as noise and ignored.
   pellet_pixel_threshold:  100   # min pixels to consider pellets present
-  foreign_pixel_threshold: 50    # min pixels to flag a foreign object (→ reject)
+  foreign_pixel_threshold: 500    # min pixels to flag a foreign object (→ reject)
 
 
 # ── Alarm codes ───────────────────────────────────────────────────────────────

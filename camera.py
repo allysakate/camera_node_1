@@ -85,6 +85,9 @@ class CameraDetector:
         self._foreign_upper = np.array(cfg.foreign_color.upper)
         self._pellet_threshold  = cfg.pellet_pixel_threshold
         self._foreign_threshold = cfg.foreign_pixel_threshold
+        # Circular ROI (fixed)
+        self._roi_center = cfg.roi_center
+        self._roi_radius = cfg.roi_radius
 
         # Foreign detection is disabled when both bounds are zero
         self._foreign_active = not (
@@ -174,7 +177,11 @@ class CameraDetector:
 
     def _detect(self, bgr: np.ndarray) -> DetectionResult:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        # Circular ROI mask
+        roi_mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        cv2.circle(roi_mask, self._roi_center, self._roi_radius, 255, -1)
 
+        hsv = cv2.bitwise_and(hsv, hsv, mask=roi_mask)
         pellet_mask = cv2.inRange(hsv, self._pellet_lower, self._pellet_upper)
         pellet_px   = cv2.countNonZero(pellet_mask)
 
@@ -203,6 +210,7 @@ class CameraDetector:
 
         # Annotated frame: pellets → green, foreign → red, circle outlines → cyan
         annotated = bgr.copy()
+        cv2.circle(annotated, self._roi_center, self._roi_radius, (255, 255, 0), 2)
         annotated[pellet_mask > 0] = [0, 255, 0]
         if self._foreign_active and foreign_px > 0:
             annotated[foreign_mask > 0] = [0, 0, 255]

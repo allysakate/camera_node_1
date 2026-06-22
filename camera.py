@@ -6,10 +6,10 @@ Two classes:
   VideoWorker     — Thin Qt wrapper around CameraDetector for live preview.
                     Used by camera_gui.py only.
 """
-
+import os
 import queue as _queue
 import threading
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, List
 
 import cv2
 import numpy as np
@@ -18,27 +18,42 @@ import depthai as dai
 from config_loader import load_config
 
 
-def enumerate_webcams(max_index: int = 6) -> list[int]:
-    """Return available webcam device indices (0-based) via cv2 probe.
-
-    Uses an actual read() rather than isOpened() — on Linux, V4L2 metadata
-    devices (e.g. /dev/video1, /dev/video3) open successfully but produce no
-    frames, so isOpened() alone gives false positives.
-    Suppresses OpenCV's V4L2 WARN/ERROR output during the probe.
+def enumerate_webcams(max_index: int = 6) -> List[int]:
     """
+    Return available webcam device indices (0-based) via cv2 probe.
+
+    Uses read() instead of isOpened() because Linux V4L2 devices may open
+    successfully but not return frames.
+
+    Headless-safe: avoids cv2 logging APIs that may not exist.
+    """
+
+    # Suppress OpenCV logs (works in headless builds)
+    os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+
     available = []
-    prev_level = cv2.getLogLevel()
-    cv2.setLogLevel(0)
-    try:
-        for i in range(max_index):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    available.append(i)
-            cap.release()
-    finally:
-        cv2.setLogLevel(prev_level)
+
+    for i in range(max_index):
+        cap = None
+        try:
+            cap = cv2.VideoCapture(i, cv2.CAP_V4L2)
+
+            if not cap.isOpened():
+                continue
+
+            ret, frame = cap.read()
+
+            if ret and frame is not None:
+                available.append(i)
+
+        except Exception:
+            # ignore broken devices/backends
+            pass
+
+        finally:
+            if cap is not None:
+                cap.release()
+
     return available
 
 

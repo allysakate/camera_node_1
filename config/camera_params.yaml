@@ -23,7 +23,7 @@ spb_bridge:
 
   # --- Broker selection ---
   # broker_type: local | hivemq
-  broker_type: local
+  broker_type: hivemq
 
   # NOTE: Broker host / username / password live in camera_secrets.yaml (gitignored).
   # See camera_secrets.example.yaml for the expected structure.

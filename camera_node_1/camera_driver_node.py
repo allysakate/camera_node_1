@@ -15,7 +15,14 @@ import threading
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Empty, String
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
+from std_msgs.msg import Bool, Empty, String
+
+_TRANSIENT_LOCAL_QOS = QoSProfile(
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
 
 from .config_loader import load_config
 from .camera import CameraDetector
@@ -25,16 +32,30 @@ class CameraDriverNode(Node):
     def __init__(self):
         super().__init__("camera_driver_node")
         self._cfg = load_config()
-        self._detector = CameraDetector(self._cfg)
+
+        self.declare_parameter("camera_type",  "depthai")
+        self.declare_parameter("webcam_index", 0)
+        self.declare_parameter("device_mxid",  "")
+        camera_type  = self.get_parameter("camera_type").value.strip() or "depthai"
+        webcam_index = int(self.get_parameter("webcam_index").value)
+
+        self._detector = CameraDetector(self._cfg,
+                                        camera_type=camera_type,
+                                        webcam_index=webcam_index)
         self._n = self._cfg.frame_counter
         self._busy = False
 
-        self._result_pub = self.create_publisher(String, "camera/detection", 10)
+        self._result_pub  = self.create_publisher(String, "camera/detection", 10)
+        self._online_pub  = self.create_publisher(Bool, "camera/driver_online", _TRANSIENT_LOCAL_QOS)
         self.create_subscription(Empty, "camera/trigger", self._on_trigger, 10)
 
+        online_msg = Bool(); online_msg.data = True
+        self._online_pub.publish(online_msg)
+
         self.get_logger().info(
-            f"camera_driver_node up — {self._cfg.frame_width}x{self._cfg.frame_height}, "
-            f"frame_counter={self._n}")
+            f"camera_driver_node up — type={camera_type} "
+            f"{'index=' + str(webcam_index) if camera_type == 'webcam' else ''} "
+            f"{self._cfg.frame_width}x{self._cfg.frame_height} frames={self._n}")
 
     def _on_trigger(self, _msg: Empty):
         if self._busy:

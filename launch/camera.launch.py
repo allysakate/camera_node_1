@@ -14,7 +14,9 @@ from launch_ros.actions import Node
 
 
 def _setup(context, *args, **kwargs):
-    broker_override = context.launch_configurations.get("broker_type", "").strip()
+    broker_override  = context.launch_configurations.get("broker_type",  "").strip()
+    camera_type      = context.launch_configurations.get("camera_type",  "webcam").strip()
+    webcam_index_str = context.launch_configurations.get("webcam_index", "0").strip()
 
     from camera_node_1.config_loader import load_config
     cfg = load_config()
@@ -34,8 +36,13 @@ def _setup(context, *args, **kwargs):
         bridge_params["mqtt_username"] = broker.username
         bridge_params["mqtt_password"] = broker.password
 
+    driver_params = {"camera_type": camera_type}
+    if camera_type == "webcam":
+        driver_params["webcam_index"] = int(webcam_index_str)
+
     return [
-        Node(package="camera_node_1", executable="camera_driver_node", output="screen"),
+        Node(package="camera_node_1", executable="camera_driver_node", output="screen",
+             parameters=[driver_params]),
         Node(package="camera_node_1", executable="camera_bridge_node", output="screen",
              parameters=[bridge_params]),
     ]
@@ -46,5 +53,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "broker_type", default_value="",
             description='MQTT broker: hivemq | local | "" (use camera_params.yaml)'),
+        DeclareLaunchArgument(
+            "camera_type", default_value="webcam",
+            description='Camera type: webcam | depthai'),
+        DeclareLaunchArgument(
+            "webcam_index", default_value="0",
+            description='Webcam device index (for camera_type:=webcam)'),
         OpaqueFunction(function=_setup),
     ])

@@ -14,7 +14,7 @@ from typing import Callable, NamedTuple, List
 import cv2
 import numpy as np
 import depthai as dai
-
+import onnxruntime as ort
 from config_loader import load_config
 
 
@@ -72,11 +72,19 @@ class DetectionResult(NamedTuple):
 class CameraDetector:
     """DepthAI / webcam capture + HSV detection + circle counting. No Qt dependency."""
 
-    def __init__(self, cfg=None, camera_type: str = "depthai", webcam_index: int = 0):
+    def __init__(
+        self,
+        cfg=None,
+        camera_type="depthai",
+        webcam_index=0,
+        detection_mode="hsv",
+        model_path="topview_yolov5s_ep100.onnx",
+    ):
         if cfg is None:
             cfg = load_config()
         self._camera_type  = camera_type
         self._webcam_index = webcam_index
+        self._detection_mode = detection_mode
         self._width   = cfg.frame_width
         self._height  = cfg.frame_height
         self._pellet_lower = np.array(cfg.pellet_color.lower)
@@ -93,6 +101,18 @@ class CameraDetector:
         self._foreign_active = not (
             np.all(self._foreign_lower == 0) and np.all(self._foreign_upper == 0)
         )
+
+        if detection_mode == "onnx":
+            self._img_size = 640
+            self._conf_thres = 0.5
+            self._contaminant_class = 1
+
+            self._session = ort.InferenceSession(
+                model_path,
+                providers=["CPUExecutionProvider"]
+            )
+
+            self._input_name = self._session.get_inputs()[0].name
 
     # ------------------------------------------------------------------
     # Public API
@@ -175,7 +195,100 @@ class CameraDetector:
     # Detection logic
     # ------------------------------------------------------------------
 
-    def _detect(self, bgr: np.ndarray) -> DetectionResult:
+    def _detect(self, bgr):
+        if self._detection_mode == "onnx":
+            return self._detect_onnx(bgr)
+
+        return self._detect_hsv(bgr)
+
+    def _detect_onnx(self, bgr):
+        # ---------- preprocess ----------
+        img = cv2.resize(bgr,(self._img_size, self._img_size))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = img.astype(np.float32) / 255.0
+        img = np.transpose(img, (2, 0, 1))
+        img = np.expand_dims(img, axis=0)
+
+        # ---------- inference ----------
+        pred = self._session.run(None,{self._input_name: img})[0][0]
+        # ---------- decode ----------
+        obj_scores = pred[:, 4]
+        class_probs = pred[:, 5:]
+        class_ids = np.argmax(class_probs, axis=1)
+        class_scores = class_probs[np.arange(len(class_probs)), class_ids]
+        scores = obj_scores * class_scores
+        valid = scores > self._conf_thres
+        boxes = pred[:, :4][valid]
+        class_ids = class_ids[valid]
+        scores = scores[valid]
+
+        # ---------- NMS ----------
+        if len(boxes):
+            boxes_xyxy = np.zeros_like(boxes)
+            boxes_xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
+            boxes_xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
+            boxes_xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
+            boxes_xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
+            indices = cv2.dnn.NMSBoxes(
+                boxes_xyxy.tolist(),
+                scores.tolist(),
+                self._conf_thres,
+                0.5
+            )
+            if len(indices):
+                indices = indices.flatten()
+                boxes_xyxy = boxes_xyxy[indices]
+                class_ids = class_ids[indices]
+            else:
+                boxes_xyxy = np.empty((0, 4))
+                class_ids = np.array([])
+        else:
+            boxes_xyxy = np.empty((0, 4))
+            class_ids = np.array([])
+
+        # ---------- OUTPUT ----------
+        h, w = bgr.shape[:2]
+        scale_x = w / self._img_size
+        scale_y = h / self._img_size
+        pellet_px = 0
+        foreign_px = 0
+        pellet_found = False
+        foreign_found = False
+        annotated = bgr.copy()
+        pellet_vis = np.zeros_like(bgr)
+        foreign_vis = np.zeros_like(bgr)
+
+        # ---------- PROCESS DETECTIONS ----------
+        for xyxy, cls in zip(boxes_xyxy, class_ids):
+            x1 = int(xyxy[0] * scale_x)
+            y1 = int(xyxy[1] * scale_y)
+            x2 = int(xyxy[2] * scale_x)
+            y2 = int(xyxy[3] * scale_y)
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(w, x2)
+            y2 = min(h, y2)
+            area = max(0, x2 - x1) * max(0, y2 - y1)
+            if cls == 0:
+                pellet_found = True
+                pellet_px += area
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                pellet_vis[y1:y2, x1:x2] = [0, 255, 0]
+
+            elif cls == 1:
+                foreign_found = True
+                foreign_px += area
+                cv2.rectangle(annotated,(x1, y1), (x2, y2), (0, 0, 255), 2)
+                foreign_vis[y1:y2, x1:x2] = [0, 0, 255]
+
+        # ---------- PASS / FAIL ----------
+        pass_ = pellet_found and not foreign_found
+        return DetectionResult(
+            pass_, pellet_px, foreign_px, 0,
+            annotated, pellet_vis, foreign_vis, bgr,
+        )
+
+    def _detect_hsv(self, bgr: np.ndarray) -> DetectionResult:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
         # Circular ROI mask
         roi_mask = np.zeros(bgr.shape[:2], dtype=np.uint8)

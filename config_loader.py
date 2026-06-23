@@ -160,8 +160,8 @@ class CameraConfig:
         return float(_deep_get(self._d, "camera", "detection_timeout_s", default=30.0))
 
     @property
-    def frame_counter(self) -> int:
-        return int(_deep_get(self._d, "camera", "frame_counter", default=30))
+    def detection_mode(self) -> str:
+        return _deep_get(self._d, "camera", "detection_mode", default="onnx")
 
     @property
     def roi_center(self) -> tuple:

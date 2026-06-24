@@ -77,14 +77,11 @@ class CameraDetector:
         cfg=None,
         camera_type="depthai",
         webcam_index=0,
-        detection_mode="hsv",
-        model_path="topview_yolov5s_ep100.onnx",
     ):
         if cfg is None:
             cfg = load_config()
         self._camera_type  = camera_type
         self._webcam_index = webcam_index
-        self._detection_mode = detection_mode
         self._width   = cfg.frame_width
         self._height  = cfg.frame_height
         self._pellet_lower = np.array(cfg.pellet_color.lower)
@@ -93,6 +90,7 @@ class CameraDetector:
         self._foreign_upper = np.array(cfg.foreign_color.upper)
         self._pellet_threshold  = cfg.pellet_pixel_threshold
         self._foreign_threshold = cfg.foreign_pixel_threshold
+        self._detection_mode = cfg.detection_mode
         # Circular ROI (fixed)
         self._roi_center = cfg.roi_center
         self._roi_radius = cfg.roi_radius
@@ -102,13 +100,13 @@ class CameraDetector:
             np.all(self._foreign_lower == 0) and np.all(self._foreign_upper == 0)
         )
 
-        if detection_mode == "onnx":
+        if self._detection_mode == "onnx":
             self._img_size = 640
             self._conf_thres = 0.5
             self._contaminant_class = 1
 
             self._session = ort.InferenceSession(
-                model_path,
+                cfg.model_path,
                 providers=["CPUExecutionProvider"]
             )
 
@@ -196,6 +194,10 @@ class CameraDetector:
     # ------------------------------------------------------------------
 
     def _detect(self, bgr):
+        # Circular ROI mask
+        roi_mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        cv2.circle(roi_mask, self._roi_center, self._roi_radius, 255, -1)
+        bgr = cv2.bitwise_and(bgr, bgr, mask=roi_mask)
         if self._detection_mode == "onnx":
             return self._detect_onnx(bgr)
 
@@ -282,7 +284,7 @@ class CameraDetector:
                 foreign_vis[y1:y2, x1:x2] = [0, 0, 255]
 
         # ---------- PASS / FAIL ----------
-        pass_ = pellet_found and not foreign_found
+        pass_ = not foreign_found
         return DetectionResult(
             pass_, pellet_px, foreign_px, 0,
             annotated, pellet_vis, foreign_vis, bgr,
@@ -290,11 +292,6 @@ class CameraDetector:
 
     def _detect_hsv(self, bgr: np.ndarray) -> DetectionResult:
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        # Circular ROI mask
-        roi_mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
-        cv2.circle(roi_mask, self._roi_center, self._roi_radius, 255, -1)
-
-        hsv = cv2.bitwise_and(hsv, hsv, mask=roi_mask)
         pellet_mask = cv2.inRange(hsv, self._pellet_lower, self._pellet_upper)
         pellet_px   = cv2.countNonZero(pellet_mask)
 
@@ -323,7 +320,6 @@ class CameraDetector:
 
         # Annotated frame: pellets → green, foreign → red, circle outlines → cyan
         annotated = bgr.copy()
-        cv2.circle(annotated, self._roi_center, self._roi_radius, (255, 255, 0), 2)
         annotated[pellet_mask > 0] = [0, 255, 0]
         if self._foreign_active and foreign_px > 0:
             annotated[foreign_mask > 0] = [0, 0, 255]
@@ -429,7 +425,7 @@ try:
 
             h, w, ch = frame_bgr.shape
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            img = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format_RGB888)
+            img = QImage(rgb.data.tobytes(), w, h, ch * w, QImage.Format_RGB888).copy()
             self.frame_ready.emit(img)
             self.raw_frame_ready.emit(result.raw)
 

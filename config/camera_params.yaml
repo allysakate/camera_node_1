@@ -48,11 +48,12 @@ camera:
   # How long Execute may run before alarm 8002 (DetectionTimeout) fires.
   detection_timeout_s: 30.0
   # Detection method: "hsv" for simple HSV thresholding or "onnx" to use a YOLO model (not yet implemented).
-  detection_mode: onnx
+  detection_mode: hsv
+  model_path : "topview_yolov5s_ep100.onnx"
   # ROI Center
   roi_center : [310, 140]
   # ROI Radius
-  roi_radius: 170
+  roi_radius: 200 # hsv: 170
 
   # Expected pellet colour — HSV range (OpenCV scale: H 0-179, S 0-255, V 0-255).
   # Pixels inside this range are counted as pellets (Result/PelletPixelCount).

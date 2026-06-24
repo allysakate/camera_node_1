@@ -162,6 +162,10 @@ class CameraConfig:
     @property
     def detection_mode(self) -> str:
         return _deep_get(self._d, "camera", "detection_mode", default="onnx")
+    
+    @property
+    def model_path(self) -> str:
+        return _deep_get(self._d, "camera", "model_path", default="topview_yolov5s_ep100.onnx")
 
     @property
     def roi_center(self) -> tuple:
